@@ -86,6 +86,57 @@
                      '("GOROOT=/tmp/root" "GOOS=linux" "GOARCH=arm"
                        "CGO_ENABLED=1" "GOFLAGS=-tags=one,two"))))))
 
+(ert-deftest tinygo-pinned-target-survives-a-changed-default-directory ()
+  ;; lsp-mode defers startup through a timer and binds `default-directory' to
+  ;; the workspace root -- often a repository root above the directory holding
+  ;; `.tinygo-target' -- before asking for the server command and environment.
+  ;; The target must not be re-resolved from the directory at that point.
+  (let ((tinygo--project-targets (make-hash-table :test #'equal))
+        (tinygo-target nil))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'tinygo--file-target)
+                 (lambda (directory)
+                   (and (equal directory "/project/examples/wifi/")
+                        "esp32-coreboard-v2"))))
+        (let ((default-directory "/project/examples/wifi/"))
+          (tinygo--pin-target (tinygo-current-target)))
+        ;; Now standing at the workspace root, where no target file exists.
+        (let ((default-directory "/project/"))
+          (should (equal (tinygo-current-target) "esp32-coreboard-v2")))))))
+
+(ert-deftest tinygo-pinned-target-does-not-leak-to-other-buffers ()
+  (let ((tinygo--project-targets (make-hash-table :test #'equal))
+        (tinygo-target nil))
+    (with-temp-buffer
+      (tinygo--pin-target "pico"))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'tinygo--file-target) (lambda (_) nil)))
+        (should-not (tinygo-target-configured-p))))))
+
+(ert-deftest tinygo-ensure-disables-host-go-checkers ()
+  ;; `flycheck-disabled-checkers' is set buffer-locally rather than let-bound:
+  ;; a dynamic binding shadows the buffer-local value, so a let-bound variable
+  ;; cannot observe `setq-local' at all.
+  (let ((tinygo-disabled-flycheck-checkers '(go-build go-vet)))
+    (with-temp-buffer
+      (setq-local flycheck-disabled-checkers '(existing))
+      (tinygo--disable-host-go-checkers)
+      (should (equal flycheck-disabled-checkers '(go-build go-vet existing))))))
+
+(ert-deftest tinygo-checker-suppression-keeps-existing-entries-once ()
+  (let ((tinygo-disabled-flycheck-checkers '(go-build go-vet)))
+    (with-temp-buffer
+      (setq-local flycheck-disabled-checkers '(go-vet existing))
+      (tinygo--disable-host-go-checkers)
+      (should (equal flycheck-disabled-checkers '(go-build go-vet existing))))))
+
+(ert-deftest tinygo-checker-suppression-can-be-switched-off ()
+  (let ((tinygo-disabled-flycheck-checkers nil))
+    (with-temp-buffer
+      (setq-local flycheck-disabled-checkers '(existing))
+      (tinygo--disable-host-go-checkers)
+      (should (equal flycheck-disabled-checkers '(existing))))))
+
 (ert-deftest tinygo-server-command-wraps-configured-server ()
   (let ((tinygo-lsp-server-command '("gopls" "-remote=auto")))
     (cl-letf (((symbol-function 'tinygo-current-target) (lambda () "pico"))

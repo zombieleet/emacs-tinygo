@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- Keep the target after the language server starts. lsp-mode defers startup
+  through a timer and binds `default-directory` to the workspace root before
+  asking for the server command and environment, both of which re-resolved the
+  target from that directory. Where `.tinygo-target` sits below the workspace
+  root -- a Go module under `examples/` is the ordinary case -- this raised
+  `No TinyGo target` from inside a timer, with nothing tying it to the file
+  just opened. The resolved target is now pinned buffer-locally.
+- Disable Flycheck checkers that drive the host Go toolchain. They resolve the
+  host GOROOT rather than TinyGo's, lack the target's build tags, and reject
+  `#cgo` flags TinyGo libraries depend on, so what they report describes the
+  toolchain rather than the code -- and disabling one merely promotes the next
+  in the chain. See `tinygo-disabled-flycheck-checkers`; `go-gofmt` is left
+  alone, since formatting does not depend on any of this.
 - Enable cgo for the language server. Passing GOARCH is what makes Go treat
   the analysis as a cross-build, and cgo is off by default there, so cgo files
   were dropped from every package. A library binding C then reported its whole

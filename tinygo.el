@@ -81,6 +81,25 @@ affected."
   :type 'boolean
   :group 'tinygo)
 
+(defcustom tinygo-disabled-flycheck-checkers
+  '(go-build go-test go-vet go-errcheck go-unconvert go-staticcheck golangci-lint)
+  "Flycheck checkers disabled in TinyGo buffers.
+
+These drive the host Go toolchain, which cannot analyse TinyGo code: it
+resolves the host GOROOT rather than TinyGo's, lacks the target's build
+tags, and rejects `#cgo' flags that TinyGo libraries rely on -- espradio
+trips the last of these with `-fno-short-enums'.  What they report is
+therefore noise about the toolchain rather than about the code, and
+disabling one only promotes the next in the chain.  Diagnostics still
+come from the language server, which does get TinyGo's environment.
+
+`go-gofmt' is deliberately absent: formatting does not depend on any of
+this.  Set to nil to leave Flycheck alone entirely."
+  :type '(repeat symbol)
+  :group 'tinygo)
+
+(defvar flycheck-disabled-checkers)
+
 (defvar tinygo--environment-cache (make-hash-table :test #'equal)
   "Cache of environments keyed by TinyGo executable and target.")
 
@@ -140,6 +159,24 @@ TinyGo support at all must use `tinygo-target-configured-p' instead."
     (unless (and (stringp target) (not (string-empty-p target)))
       (user-error "No TinyGo target: set tinygo-target or add .tinygo-target"))
     target))
+
+(defun tinygo--pin-target (target)
+  "Record TARGET buffer-locally so later lookups cannot lose it.
+
+Targets are normally resolved from `default-directory', but the functions
+supplying the server command and its environment run long after a buffer
+asks for a server: lsp-mode defers startup through a timer, and binds
+`default-directory' to the workspace root before calling them.  That root
+is frequently a repository root sitting above the directory that holds
+`.tinygo-target' -- a Go module under examples/ is the ordinary case --
+so resolution failed there with a \"No TinyGo target\" error raised
+inside a timer, where it reads as unrelated to opening the file.
+
+Pinning the resolved value makes those later lookups independent of the
+directory: a buffer-local `tinygo-target' is the first source consulted
+by `tinygo--configured-target'.  It stays buffer-local, so it cannot
+widen activation for any other buffer."
+  (setq-local tinygo-target target))
 
 (defun tinygo--info (target)
   "Return the output of `tinygo info TARGET', or signal an error."
@@ -308,6 +345,7 @@ returned bare and the caller is responsible for binding
 This is buffer-local and never changes Eglot's normal Go configuration."
   (interactive)
   (let ((target (tinygo-current-target)))
+    (tinygo--pin-target target)
     (require 'eglot)
     ;; Put the local entry first; Eglot uses the first matching association.
     (setq-local eglot-server-programs
@@ -355,15 +393,27 @@ This registration is safe to call repeatedly."
 (defun tinygo-lsp-ensure ()
   "Start lsp-mode for this buffer with its existing Go LSP under TinyGo."
   (interactive)
-  (tinygo-current-target)
+  (tinygo--pin-target (tinygo-current-target))
   (tinygo-register-lsp-mode-client)
   (lsp-deferred))
+
+(defun tinygo--disable-host-go-checkers ()
+  "Disable Flycheck checkers that cannot analyse TinyGo code.
+Does nothing when Flycheck is absent.  See
+`tinygo-disabled-flycheck-checkers'."
+  (when (and tinygo-disabled-flycheck-checkers
+             (boundp 'flycheck-disabled-checkers))
+    (setq-local flycheck-disabled-checkers
+                (delete-dups
+                 (append tinygo-disabled-flycheck-checkers
+                         flycheck-disabled-checkers)))))
 
 ;;;###autoload
 (defun tinygo-ensure ()
   "Start the configured LSP client for the current TinyGo buffer.
 The client is chosen by `tinygo-lsp-client'."
   (interactive)
+  (tinygo--disable-host-go-checkers)
   (pcase tinygo-lsp-client
     ('eglot (tinygo-eglot-ensure))
     ('lsp-mode (tinygo-lsp-ensure))
