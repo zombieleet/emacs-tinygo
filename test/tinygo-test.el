@@ -137,6 +137,14 @@
       (tinygo--disable-host-go-checkers)
       (should (equal flycheck-disabled-checkers '(existing))))))
 
+(ert-deftest tinygo-auto-ensure-ignores-buffers-that-are-not-go ()
+  (let ((called nil))
+    (cl-letf (((symbol-function 'tinygo-auto-ensure) (lambda () (setq called t))))
+      (with-temp-buffer
+        (fundamental-mode)
+        (tinygo--auto-ensure-after-local-variables)
+        (should-not called)))))
+
 (ert-deftest tinygo-server-command-wraps-configured-server ()
   (let ((tinygo-lsp-server-command '("gopls" "-remote=auto")))
     (cl-letf (((symbol-function 'tinygo-current-target) (lambda () "pico"))
@@ -231,8 +239,17 @@
       (should (= started 1)))))
 
 (ert-deftest tinygo-installs-automatic-go-hooks ()
-  (should (memq #'tinygo-auto-ensure go-mode-hook))
-  (should (memq #'tinygo-auto-ensure go-ts-mode-hook)))
+  ;; Entry is `hack-local-variables-hook', not the Go mode hooks: those run
+  ;; before directory-local variables are applied, so `tinygo-command' would
+  ;; still hold its global default and the environment would be built -- and
+  ;; cached -- against whichever TinyGo is on PATH rather than the project's.
+  (should (memq #'tinygo--auto-ensure-after-local-variables
+                (default-value 'hack-local-variables-hook)))
+  ;; go-mode need not be loaded, and nothing here should define its hooks.
+  (when (boundp 'go-mode-hook)
+    (should-not (memq #'tinygo-auto-ensure (default-value 'go-mode-hook))))
+  (when (boundp 'go-ts-mode-hook)
+    (should-not (memq #'tinygo-auto-ensure (default-value 'go-ts-mode-hook)))))
 
 (ert-deftest tinygo-global-target-does-not-claim-ordinary-go-projects ()
   ;; The lsp-mode client outranks the stock Go client, so activating on a

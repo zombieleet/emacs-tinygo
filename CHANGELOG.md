@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- Start automatic support from `hack-local-variables-hook` rather than the Go
+  mode hooks. Major mode hooks run *before* directory-local variables are
+  applied, so `tinygo-command` still held its global value: the environment was
+  built, and cached, from whichever TinyGo sits on PATH instead of the one the
+  project asked for. A project selecting a development build through
+  `.dir-locals.el` was handed a GOROOT from the released toolchain, which fails
+  quietly -- most code still resolves, so it reads as a handful of unexplained
+  diagnostics rather than as the wrong compiler.
 - Keep the target after the language server starts. lsp-mode defers startup
   through a timer and binds `default-directory` to the workspace root before
   asking for the server command and environment, both of which re-resolved the

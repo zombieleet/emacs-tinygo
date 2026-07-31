@@ -448,10 +448,23 @@ The client is chosen by `tinygo-lsp-client'."
                                 (error-message-string err))
                         :warning)))))
 
-;; Requiring the package is enough to opt in.  Each hook immediately returns
-;; in ordinary Go projects without a `.tinygo-target' marker.
-(add-hook 'go-mode-hook #'tinygo-auto-ensure)
-(add-hook 'go-ts-mode-hook #'tinygo-auto-ensure)
+(defun tinygo--auto-ensure-after-local-variables ()
+  "Call `tinygo-auto-ensure' in Go buffers once local variables are set."
+  (when (derived-mode-p 'go-mode 'go-ts-mode)
+    (tinygo-auto-ensure)))
+
+;; Requiring the package is enough to opt in.  The hook immediately returns in
+;; ordinary Go projects without a `.tinygo-target' marker.
+;;
+;; `hack-local-variables-hook' rather than the Go mode hooks: major mode hooks
+;; run *before* directory-local variables are applied, so `tinygo-command' still
+;; held its global default there.  The environment was then built -- and cached
+;; -- from whichever TinyGo happens to be on PATH instead of the one the project
+;; asked for, handing the language server a GOROOT from the wrong toolchain.
+;; That failure is quiet: the wrong GOROOT still resolves most code, so it shows
+;; up as a few odd diagnostics rather than anything pointing at the cause.
+(add-hook 'hack-local-variables-hook
+          #'tinygo--auto-ensure-after-local-variables)
 
 (provide 'tinygo)
 ;;; tinygo.el ends here
