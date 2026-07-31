@@ -4,7 +4,7 @@
 ;; SPDX-License-Identifier: MIT
 
 ;; Author: TinyGo Emacs contributors
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: languages, tools, go, tinygo
 
@@ -20,12 +20,19 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'subr-x)
 
 (declare-function lsp-register-client "lsp-mode")
 (declare-function make-lsp-client "lsp-mode")
 (declare-function lsp-stdio-connection "lsp-mode")
 (declare-function lsp-deferred "lsp-mode")
+(declare-function lsp-workspaces "lsp-mode")
+(declare-function lsp-workspace-restart "lsp-mode")
+(declare-function eglot-current-server "eglot")
+(declare-function eglot-shutdown "eglot")
+
+(defvar lsp-mode)
 
 (defgroup tinygo nil
   "TinyGo support for Emacs."
@@ -65,8 +72,30 @@ lsp-mode otherwise.  Set this to `eglot' or `lsp-mode' to choose explicitly."
                  (const :tag "lsp-mode" lsp-mode))
   :group 'tinygo)
 
+(defcustom tinygo-auto-start t
+  "Whether to start TinyGo LSP support when `.tinygo-target' is present.
+
+When non-nil, opening a Go buffer below a `.tinygo-target' file validates the
+configured target and calls `tinygo-ensure'.  Ordinary Go projects are not
+affected."
+  :type 'boolean
+  :group 'tinygo)
+
 (defvar tinygo--environment-cache (make-hash-table :test #'equal)
   "Cache of environments keyed by TinyGo executable and target.")
+
+(defvar tinygo--project-targets (make-hash-table :test #'equal)
+  "Targets selected interactively, keyed by project directory.")
+
+(defun tinygo--project-key (&optional directory)
+  "Return a stable TinyGo project key for DIRECTORY."
+  (let ((directory (or directory default-directory)))
+    (file-truename
+     (or (locate-dominating-file directory ".tinygo-target")
+         (locate-dominating-file directory "go.work")
+         (locate-dominating-file directory "go.mod")
+         (locate-dominating-file directory ".git")
+         directory))))
 
 (defun tinygo--file-target (directory)
   "Return the target configured by `.tinygo-target' above DIRECTORY."
@@ -75,10 +104,20 @@ lsp-mode otherwise.  Set this to `eglot' or `lsp-mode' to choose explicitly."
       (insert-file-contents (expand-file-name ".tinygo-target" file))
       (string-trim (buffer-substring-no-properties (point-min) (point-max))))))
 
+(defun tinygo-project-p (&optional directory)
+  "Return non-nil when DIRECTORY is below a `.tinygo-target' file."
+  (and (locate-dominating-file (or directory default-directory)
+                              ".tinygo-target")
+       t))
+
 (defun tinygo-current-target (&optional directory)
   "Return the TinyGo target for DIRECTORY, or signal a helpful error."
-  (let ((target (or tinygo-target
-                    (tinygo--file-target (or directory default-directory)))))
+  (let* ((directory (or directory default-directory))
+         (target
+          (or (and (local-variable-p 'tinygo-target) tinygo-target)
+              (gethash (tinygo--project-key directory) tinygo--project-targets)
+              (tinygo--file-target directory)
+              (default-value 'tinygo-target))))
     (unless (and (stringp target) (not (string-empty-p target)))
       (user-error "No TinyGo target: set tinygo-target or add .tinygo-target"))
     target))
@@ -130,22 +169,60 @@ This is suitable for both Eglot and lsp-mode connection functions."
           (tinygo--environment-for-target (tinygo-current-target))
           tinygo-lsp-server-command))
 
+(defun tinygo--set-project-target (target)
+  "Set TARGET for the current project and its open Go buffers."
+  (let ((project-key (tinygo--project-key)))
+    (puthash project-key target tinygo--project-targets)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (and (derived-mode-p 'go-mode 'go-ts-mode)
+                   (equal (ignore-errors (tinygo--project-key)) project-key))
+          (setq-local tinygo-target target))))))
+
+(defun tinygo--restart-active-lsp ()
+  "Restart the active Eglot or lsp-mode server with fresh TinyGo settings."
+  (let ((eglot-server
+         (and (fboundp 'eglot-current-server)
+              (ignore-errors (eglot-current-server)))))
+    (cond
+     (eglot-server
+      ;; `eglot-reconnect' deliberately reuses the original process command.
+      ;; Shut down and start anew so a changed target gets a new environment.
+      (eglot-shutdown eglot-server)
+      (tinygo-eglot-ensure)
+      'eglot)
+     ((and (boundp 'lsp-mode)
+           (symbol-value 'lsp-mode)
+           (fboundp 'lsp-workspaces)
+           (fboundp 'lsp-workspace-restart))
+      (let ((workspaces (lsp-workspaces)))
+        (dolist (workspace workspaces)
+          (lsp-workspace-restart workspace))
+        (and workspaces 'lsp-mode))))))
+
 ;;;###autoload
 (defun tinygo-set-target (target)
-  "Set TARGET for this buffer and restart its LSP workspace when possible."
-  (interactive "sTinyGo target: ")
-  (setq-local tinygo-target target)
-  (tinygo-clear-environment-cache)
-  (cond
-   ((and (bound-and-true-p eglot--managed-mode) (fboundp 'eglot-reconnect))
-    (eglot-reconnect))
-   ((and (bound-and-true-p lsp-mode) (fboundp 'lsp-workspace-restart))
-    (lsp-workspace-restart)))
+  "Validate and select TARGET, then restart the active LSP workspace."
+  (interactive
+   (list
+    (read-string "TinyGo target: "
+                 (condition-case nil
+                     (tinygo-current-target)
+                   (user-error nil)))))
+  (setq target (string-trim target))
+  (when (string-empty-p target)
+    (user-error "TinyGo target cannot be empty"))
+  ;; Validate before changing buffer or project state.  This also warms the
+  ;; environment cache used when the new language-server process starts.
+  (remhash (list tinygo-command target) tinygo--environment-cache)
+  (tinygo--environment-for-target target)
+  (tinygo--set-project-target target)
+  (tinygo--restart-active-lsp)
   (message "TinyGo target set to %s" target))
 
 ;;; Eglot
 
-(defun tinygo--eglot-contact ()
+(defun tinygo--eglot-contact (&optional _interactive _project)
   "Return the Eglot contact for the current TinyGo buffer."
   (tinygo--server-command))
 
@@ -159,7 +236,10 @@ This is buffer-local and never changes Eglot's normal Go configuration."
   ;; Put the local entry first; Eglot uses the first matching association.
   (setq-local eglot-server-programs
               (cons `((go-mode go-ts-mode) . tinygo--eglot-contact)
-                    (copy-tree eglot-server-programs)))
+                    (cl-remove-if
+                     (lambda (entry)
+                       (eq (cdr-safe entry) 'tinygo--eglot-contact))
+                     (copy-tree eglot-server-programs))))
   (eglot-ensure))
 
 ;;; lsp-mode
@@ -202,9 +282,40 @@ The client is chosen by `tinygo-lsp-client'."
     ('eglot (tinygo-eglot-ensure))
     ('lsp-mode (tinygo-lsp-ensure))
     ('auto
-     (if (require 'eglot nil t)
-         (tinygo-eglot-ensure)
-       (tinygo-lsp-ensure)))))
+     (cond
+      ((and (fboundp 'eglot-current-server)
+            (ignore-errors (eglot-current-server)))
+       (tinygo-eglot-ensure))
+      ((and (boundp 'lsp-mode) (symbol-value 'lsp-mode))
+       (tinygo-lsp-ensure))
+      ((featurep 'lsp-mode)
+       (tinygo-lsp-ensure))
+      ((require 'eglot nil t)
+       (tinygo-eglot-ensure))
+      ((require 'lsp-mode nil t)
+       (tinygo-lsp-ensure))
+      (t
+       (user-error "Install Eglot or lsp-mode to use TinyGo LSP support"))))))
+
+;;;###autoload
+(defun tinygo-auto-ensure ()
+  "Start TinyGo support when the current project has `.tinygo-target'."
+  (when (and tinygo-auto-start (tinygo-project-p))
+    (condition-case err
+        (progn
+          ;; Validate now even when the selected client starts asynchronously.
+          (tinygo--environment-for-target (tinygo-current-target))
+          (tinygo-ensure))
+      (error
+       (display-warning 'tinygo
+                        (format "Automatic TinyGo LSP startup failed: %s"
+                                (error-message-string err))
+                        :warning)))))
+
+;; Requiring the package is enough to opt in.  Each hook immediately returns
+;; in ordinary Go projects without a `.tinygo-target' marker.
+(add-hook 'go-mode-hook #'tinygo-auto-ensure)
+(add-hook 'go-ts-mode-hook #'tinygo-auto-ensure)
 
 (provide 'tinygo)
 ;;; tinygo.el ends here

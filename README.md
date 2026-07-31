@@ -37,17 +37,15 @@ go install golang.org/x/tools/gopls@latest
 After publishing this repository, install it from its Git URL:
 
 ```elisp
-(package-vc-install "https://github.com/YOUR-USER/emacs-tinygo")
+(package-vc-install "https://github.com/zombieleet/emacs-tinygo")
 (require 'tinygo)
 ```
-
-Replace `YOUR-USER` with the GitHub account that hosts this project.
 
 ### straight.el
 
 ```elisp
 (straight-use-package
- '(tinygo :type git :host github :repo "YOUR-USER/emacs-tinygo"))
+ '(tinygo :type git :host github :repo "zombieleet/emacs-tinygo"))
 (require 'tinygo)
 ```
 
@@ -69,8 +67,10 @@ file at the project root whose only contents are the target name:
 pico
 ```
 
-`tinygo.el` finds this file from subdirectories automatically. Commit it when
-all contributors use the same target.
+`tinygo.el` finds this file from subdirectories automatically. Opening a Go or
+Go tree-sitter buffer beneath it validates the target and starts TinyGo-aware
+LSP support automatically. Commit the file when all contributors use the same
+target.
 
 Alternatively, configure Emacs directory locals in `.dir-locals.el`:
 
@@ -78,29 +78,36 @@ Alternatively, configure Emacs directory locals in `.dir-locals.el`:
 ((go-mode . ((tinygo-target . "pico"))))
 ```
 
-For a one-off buffer setting, run `M-x tinygo-set-target`. Changing the target
-restarts the active LSP workspace when possible.
+For a session-only project setting, run `M-x tinygo-set-target`. The command
+verifies the target with `tinygo info`, applies it to all open Go buffers in
+the project, and restarts the active LSP workspace with a fresh environment.
 
-## Use it
+## Automatic behavior
 
-Open a Go file in a project with a target and run:
+After `(require 'tinygo)`, simply open a Go file beneath `.tinygo-target`. The
+package automatically prepares the TinyGo environment and starts an LSP client.
+Ordinary Go projects are unaffected.
+
+The `auto` client setting reuses an active Eglot or lsp-mode session, respects
+an already loaded lsp-mode configuration, and otherwise prefers Eglot. To
+choose explicitly:
+
+```elisp
+(setq tinygo-lsp-client 'eglot)    ; or 'lsp-mode
+```
+
+To disable automatic startup:
+
+```elisp
+(setq tinygo-auto-start nil)
+```
+
+Manual commands remain available:
 
 ```text
 M-x tinygo-ensure
-```
-
-By default, this starts Eglot when it is available, otherwise lsp-mode. To
-choose explicitly, run `M-x tinygo-eglot-ensure` or `M-x tinygo-lsp-ensure`.
-
-To start automatically in all TinyGo projects:
-
-```elisp
-(with-eval-after-load 'tinygo
-  (add-hook 'go-mode-hook
-            (lambda ()
-              (when (or tinygo-target
-                        (locate-dominating-file default-directory ".tinygo-target"))
-                (tinygo-ensure)))))
+M-x tinygo-eglot-ensure
+M-x tinygo-lsp-ensure
 ```
 
 Use one LSP client per buffer: do not enable Eglot and lsp-mode together.
@@ -125,6 +132,7 @@ Corfu or Company continue to work.
 | `tinygo-target` | `nil` | Target, including directory-local values. |
 | `tinygo-lsp-server-command` | `("gopls")` | LSP server command. |
 | `tinygo-lsp-client` | `auto` | `auto`, `eglot`, or `lsp-mode`. |
+| `tinygo-auto-start` | `t` | Start automatically for `.tinygo-target`. |
 
 For another compatible LSP server:
 
