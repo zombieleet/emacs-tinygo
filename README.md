@@ -22,7 +22,6 @@ engine or change ordinary Go projects.
 - [TinyGo](https://tinygo.org/getting-started/install/) on `exec-path`.
 - A Go LSP server on `exec-path`, normally `gopls`.
 - Eglot or [lsp-mode](https://emacs-lsp.github.io/lsp-mode/).
-- A POSIX `env` command (Linux, macOS, and BSD work out of the box).
 
 Install `gopls` if needed:
 
@@ -60,8 +59,15 @@ Clone this repository, then add it to your init file:
 
 ## Select a TinyGo target
 
-The target is project-specific. The recommended method is a `.tinygo-target`
-file at the project root whose only contents are the target name:
+The target is project-specific, and deliberately so: TinyGo support activates
+only for projects that have selected a target — via `.tinygo-target`, a
+directory-local value, or `M-x tinygo-set-target`. Setting `tinygo-target`
+globally does **not** make every Go project a TinyGo project; under lsp-mode
+that would mean this client, which outranks the ordinary Go client, taking
+over plain Go work.
+
+The recommended method is a `.tinygo-target` file at the project root whose
+only contents are the target name:
 
 ```text
 pico

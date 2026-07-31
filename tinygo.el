@@ -110,14 +110,33 @@ affected."
                               ".tinygo-target")
        t))
 
+(defun tinygo--configured-target (&optional directory)
+  "Return the target configured for DIRECTORY's project, or nil.
+
+Only project-scoped sources count: a buffer-local or directory-local
+`tinygo-target', a target chosen with `tinygo-set-target', or a
+`.tinygo-target' file.  The global value of `tinygo-target' is
+deliberately excluded -- it says nothing about whether a given project is
+a TinyGo project, and treating it as if it did makes every ordinary Go
+project look like one."
+  (let ((directory (or directory default-directory)))
+    (or (and (local-variable-p 'tinygo-target) tinygo-target)
+        (gethash (tinygo--project-key directory) tinygo--project-targets)
+        (tinygo--file-target directory))))
+
+(defun tinygo-target-configured-p (&optional directory)
+  "Return non-nil when DIRECTORY belongs to a project with a TinyGo target."
+  (let ((target (tinygo--configured-target directory)))
+    (and (stringp target) (not (string-empty-p target)))))
+
 (defun tinygo-current-target (&optional directory)
-  "Return the TinyGo target for DIRECTORY, or signal a helpful error."
-  (let* ((directory (or directory default-directory))
-         (target
-          (or (and (local-variable-p 'tinygo-target) tinygo-target)
-              (gethash (tinygo--project-key directory) tinygo--project-targets)
-              (tinygo--file-target directory)
-              (default-value 'tinygo-target))))
+  "Return the TinyGo target for DIRECTORY, or signal a helpful error.
+
+Falls back to the global value of `tinygo-target' so that explicit
+commands still work when one is set.  Code deciding whether to activate
+TinyGo support at all must use `tinygo-target-configured-p' instead."
+  (let ((target (or (tinygo--configured-target directory)
+                    (default-value 'tinygo-target))))
     (unless (and (stringp target) (not (string-empty-p target)))
       (user-error "No TinyGo target: set tinygo-target or add .tinygo-target"))
     target))
@@ -134,8 +153,14 @@ affected."
       (buffer-string))))
 
 (defun tinygo--info-value (label info)
-  "Extract LABEL's value from TinyGo INFO output."
-  (when (string-match (format "^%s:[ \\t]*\\(.+\\)$" (regexp-quote label)) info)
+  "Extract LABEL's value from TinyGo INFO output.
+
+The separator is matched with `[[:blank:]]' rather than a hand-written
+class.  Writing \"[ \\t]\" in Emacs Lisp produces the three characters
+space, backslash and the letter t, so a value beginning with that letter
+-- such as the `tinygo.wasm' and `tinygo.riscv' build tags -- silently
+lost its first character."
+  (when (string-match (format "^%s:[[:blank:]]*\\(.+\\)$" (regexp-quote label)) info)
     (string-trim (match-string 1 info))))
 
 (defun tinygo--environment-for-target (target)
@@ -162,12 +187,39 @@ affected."
   (clrhash tinygo--environment-cache)
   (message "TinyGo environment cache cleared"))
 
+(defun tinygo-environment-alist (&optional target)
+  "Return TARGET's environment as an alist of (NAME . VALUE)."
+  (mapcar (lambda (entry)
+            (let ((split (string-search "=" entry)))
+              (cons (substring entry 0 split) (substring entry (1+ split)))))
+          (tinygo--environment-for-target (or target (tinygo-current-target)))))
+
+(defun tinygo--env-wrapper-available-p ()
+  "Return non-nil when the POSIX `env' command can be used as a wrapper."
+  (and (not (memq system-type '(ms-dos windows-nt)))
+       (executable-find "env")
+       t))
+
 (defun tinygo--server-command ()
-  "Return an LSP command wrapped in TinyGo's target environment.
-This is suitable for both Eglot and lsp-mode connection functions."
-  (append (list "env")
-          (tinygo--environment-for-target (tinygo-current-target))
-          tinygo-lsp-server-command))
+  "Return the LSP server command for the current TinyGo buffer.
+
+Where a POSIX `env' is available the environment is carried in the
+command itself, which keeps it attached to this server no matter how the
+client spawns it.  Elsewhere -- notably Windows -- the command is
+returned bare and the caller is responsible for binding
+`process-environment'; see `tinygo--with-environment'."
+  (if (tinygo--env-wrapper-available-p)
+      (append (list "env")
+              (tinygo--environment-for-target (tinygo-current-target))
+              tinygo-lsp-server-command)
+    tinygo-lsp-server-command))
+
+(defmacro tinygo--with-environment (target &rest body)
+  "Evaluate BODY with TARGET's TinyGo environment in `process-environment'."
+  (declare (indent 1) (debug t))
+  `(let ((process-environment
+          (append (tinygo--environment-for-target ,target) process-environment)))
+     ,@body))
 
 (defun tinygo--set-project-target (target)
   "Set TARGET for the current project and its open Go buffers."
@@ -231,26 +283,33 @@ This is suitable for both Eglot and lsp-mode connection functions."
   "Start Eglot for this buffer with its existing Go LSP under TinyGo.
 This is buffer-local and never changes Eglot's normal Go configuration."
   (interactive)
-  (tinygo-current-target)
-  (require 'eglot)
-  ;; Put the local entry first; Eglot uses the first matching association.
-  (setq-local eglot-server-programs
-              (cons `((go-mode go-ts-mode) . tinygo--eglot-contact)
-                    (cl-remove-if
-                     (lambda (entry)
-                       (eq (cdr-safe entry) 'tinygo--eglot-contact))
-                     (copy-tree eglot-server-programs))))
-  (eglot-ensure))
+  (let ((target (tinygo-current-target)))
+    (require 'eglot)
+    ;; Put the local entry first; Eglot uses the first matching association.
+    (setq-local eglot-server-programs
+                (cons `((go-mode go-ts-mode) . tinygo--eglot-contact)
+                      (cl-remove-if
+                       (lambda (entry)
+                         (eq (cdr-safe entry) 'tinygo--eglot-contact))
+                       (copy-tree eglot-server-programs))))
+    ;; On POSIX the environment travels inside the command, so this binding
+    ;; is redundant but harmless.  Without an `env' wrapper it is the only
+    ;; thing that gets the environment to the server, since Eglot spawns it
+    ;; with `make-process', which reads the ambient `process-environment'.
+    (tinygo--with-environment target
+      (eglot-ensure))))
 
 ;;; lsp-mode
 
 (defvar tinygo--lsp-mode-client-registered nil)
 
 (defun tinygo--lsp-mode-activate-p (&rest _ignored)
-  "Return non-nil if the current buffer has a TinyGo target."
-  (condition-case nil
-      (progn (tinygo-current-target) t)
-    (user-error nil)))
+  "Return non-nil if the current buffer belongs to a TinyGo project.
+
+This client outranks lsp-mode's ordinary Go client, so it must only claim
+buffers whose project actually selected a target.  A global
+`tinygo-target' does not qualify; see `tinygo--configured-target'."
+  (tinygo-target-configured-p))
 
 (defun tinygo-register-lsp-mode-client ()
   "Register the TinyGo client with lsp-mode.
@@ -260,6 +319,9 @@ This registration is safe to call repeatedly."
     (lsp-register-client
      (make-lsp-client
       :new-connection (lsp-stdio-connection #'tinygo--server-command)
+      ;; lsp-mode's own way of giving a server extra environment; it works
+      ;; on every platform, unlike an `env' prefix.
+      :environment-fn #'tinygo-environment-alist
       :activation-fn #'tinygo--lsp-mode-activate-p
       :priority 10
       :server-id 'tinygo))

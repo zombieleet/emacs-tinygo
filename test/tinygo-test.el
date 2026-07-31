@@ -13,6 +13,37 @@
     (should (equal (tinygo--info-value "build tags" info) "avr baremetal tinygo"))
     (should (equal (tinygo--info-value "cached GOROOT" info) "/tmp/tinygo"))))
 
+(ert-deftest tinygo-info-value-keeps-values-beginning-with-t ()
+  ;; Regression: the separator was written "[ \\t]", which is the class
+  ;; [space backslash t], so any value starting with `t' lost that letter.
+  ;; This is not hypothetical -- the first build tag is `tinygo.wasm' for
+  ;; the wasm target and `tinygo.riscv' for the ESP32-C3 ones, and the
+  ;; mangled tag made gopls resolve a different implementation file.
+  (let ((info (concat "GOOS:              js\n"
+                      "GOARCH:            wasm\n"
+                      "build tags:        tinygo.wasm tinygo purego\n"
+                      "cached GOROOT:     /tmp/root\n")))
+    (should (equal (tinygo--info-value "build tags" info)
+                   "tinygo.wasm tinygo purego"))))
+
+(ert-deftest tinygo-info-value-handles-tab-separated-output ()
+  (let ((info "GOOS:\t\tlinux\nbuild tags:\ttinygo baremetal\n"))
+    (should (equal (tinygo--info-value "GOOS" info) "linux"))
+    (should (equal (tinygo--info-value "build tags" info) "tinygo baremetal"))))
+
+(ert-deftest tinygo-info-value-returns-nil-for-absent-labels ()
+  (should-not (tinygo--info-value "cached GOROOT" "GOOS: linux\n")))
+
+(ert-deftest tinygo-environment-preserves-the-leading-build-tag ()
+  (let ((tinygo--environment-cache (make-hash-table :test #'equal))
+        (tinygo-command "tinygo"))
+    (cl-letf (((symbol-function 'tinygo--info)
+               (lambda (_) (concat "GOOS: js\nGOARCH: wasm\n"
+                                   "build tags: tinygo.wasm tinygo purego\n"
+                                   "cached GOROOT: /tmp/root\n"))))
+      (should (member "GOFLAGS=-tags=tinygo.wasm,tinygo,purego"
+                      (tinygo--environment-for-target "wasm"))))))
+
 (ert-deftest tinygo-environment-uses-tinygo-info ()
   (let ((tinygo--environment-cache (make-hash-table :test #'equal))
         (tinygo-command "tinygo"))
@@ -118,6 +149,57 @@
 (ert-deftest tinygo-installs-automatic-go-hooks ()
   (should (memq #'tinygo-auto-ensure go-mode-hook))
   (should (memq #'tinygo-auto-ensure go-ts-mode-hook)))
+
+(ert-deftest tinygo-global-target-does-not-claim-ordinary-go-projects ()
+  ;; The lsp-mode client outranks the stock Go client, so activating on a
+  ;; global `tinygo-target' would silently take over every Go project.
+  (let ((tinygo--project-targets (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'tinygo--file-target) (lambda (_) nil))
+              ((symbol-function 'tinygo--project-key) (lambda (&optional _) "/plain/")))
+      (setq-default tinygo-target "pico")
+      (unwind-protect
+          (progn
+            (should-not (tinygo-target-configured-p))
+            (should-not (tinygo--lsp-mode-activate-p))
+            ;; An explicit command still honours the global default.
+            (should (equal (tinygo-current-target) "pico")))
+        (setq-default tinygo-target nil)))))
+
+(ert-deftest tinygo-target-configured-p-accepts-project-scoped-sources ()
+  (let ((tinygo--project-targets (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'tinygo--project-key) (lambda (&optional _) "/project/")))
+      ;; A .tinygo-target file counts.
+      (cl-letf (((symbol-function 'tinygo--file-target) (lambda (_) "pico")))
+        (should (tinygo-target-configured-p)))
+      ;; So does an interactive selection.
+      (cl-letf (((symbol-function 'tinygo--file-target) (lambda (_) nil)))
+        (should-not (tinygo-target-configured-p))
+        (puthash "/project/" "arduino" tinygo--project-targets)
+        (should (tinygo-target-configured-p))))))
+
+(ert-deftest tinygo-environment-alist-splits-on-the-first-equals ()
+  ;; GOFLAGS values contain `=', so a naive split would truncate them.
+  (cl-letf (((symbol-function 'tinygo--environment-for-target)
+             (lambda (_) '("GOROOT=/tmp/root" "GOFLAGS=-tags=a,b"))))
+    (should (equal (tinygo-environment-alist "pico")
+                   '(("GOROOT" . "/tmp/root")
+                     ("GOFLAGS" . "-tags=a,b"))))))
+
+(ert-deftest tinygo-server-command-omits-env-wrapper-when-unavailable ()
+  (cl-letf (((symbol-function 'tinygo-current-target) (lambda (&optional _) "pico"))
+            ((symbol-function 'tinygo--environment-for-target)
+             (lambda (_) '("GOROOT=/tmp/root")))
+            ((symbol-function 'tinygo--env-wrapper-available-p) (lambda () nil)))
+    (let ((tinygo-lsp-server-command '("gopls")))
+      (should (equal (tinygo--server-command) '("gopls"))))))
+
+(ert-deftest tinygo-with-environment-binds-process-environment ()
+  (cl-letf (((symbol-function 'tinygo--environment-for-target)
+             (lambda (_) '("GOROOT=/tmp/root"))))
+    (should (member "GOROOT=/tmp/root"
+                    (tinygo--with-environment "pico" process-environment)))
+    ;; and does not leak outside the form
+    (should-not (member "GOROOT=/tmp/root" process-environment))))
 
 (ert-deftest tinygo-project-p-finds-parent-target-marker ()
   (let* ((root (make-temp-file "tinygo-project-" t))
