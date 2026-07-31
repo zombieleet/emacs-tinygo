@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- Enable cgo for the language server. Passing GOARCH is what makes Go treat
+  the analysis as a cross-build, and cgo is off by default there, so cgo files
+  were dropped from every package. A library binding C then reported its whole
+  API as undefined while GOROOT and the build tags looked correct -- espradio,
+  whose `Enable`, `Connect` and `Scan` all live in a cgo file, produced seven
+  `undefined: espradio.*` errors for a program that compiles. The server only
+  parses, so this needs no C cross-compiler.
 - Stop dropping the first character of `tinygo info` values that begin with
   the letter `t`. The separator was written `[ \t]` in Elisp source, which is
   the character class `[space backslash t]`, so `tinygo.wasm` was read as

@@ -53,7 +53,22 @@
     (cl-letf (((symbol-function 'tinygo--info)
                (lambda (_) "build tags: tinygo baremetal\ncached GOROOT: /tmp/root\n")))
       (should (equal (tinygo--environment-for-target "pico")
-                     '("GOROOT=/tmp/root" "GOFLAGS=-tags=tinygo,baremetal"))))))
+                     '("GOROOT=/tmp/root" "CGO_ENABLED=1"
+                       "GOFLAGS=-tags=tinygo,baremetal"))))))
+
+(ert-deftest tinygo-environment-enables-cgo ()
+  ;; Passing GOARCH makes Go treat this as a cross-build and disable cgo,
+  ;; which drops cgo files from every package.  A library binding C then
+  ;; reports its whole API as undefined even though GOROOT and the build
+  ;; tags are right, so cgo has to be turned back on explicitly.
+  (let ((tinygo--environment-cache (make-hash-table :test #'equal))
+        (tinygo-command "tinygo"))
+    (cl-letf (((symbol-function 'tinygo--info)
+               (lambda (_) (concat "GOOS: linux\nGOARCH: arm\n"
+                                   "build tags: esp32 tinygo\n"
+                                   "cached GOROOT: /tmp/root\n"))))
+      (should (member "CGO_ENABLED=1"
+                      (tinygo--environment-for-target "esp32-coreboard-v2"))))))
 
 (ert-deftest tinygo-environment-requires-goroot-and-tags ()
   (let ((tinygo--environment-cache (make-hash-table :test #'equal))
@@ -69,7 +84,7 @@
                (lambda (_) "GOOS: linux\nGOARCH: arm\nbuild tags: one two\ncached GOROOT: /tmp/root\n")))
       (should (equal (tinygo--environment-for-target "arduino")
                      '("GOROOT=/tmp/root" "GOOS=linux" "GOARCH=arm"
-                       "GOFLAGS=-tags=one,two"))))))
+                       "CGO_ENABLED=1" "GOFLAGS=-tags=one,two"))))))
 
 (ert-deftest tinygo-server-command-wraps-configured-server ()
   (let ((tinygo-lsp-server-command '("gopls" "-remote=auto")))

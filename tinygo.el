@@ -177,7 +177,14 @@ architecture -- TinyGo reports `arm' for AVR and 32-bit RISC-V alike,
 because Go has no such GOARCH and rejects the pair outright.  Passing it
 is still worthwhile: it makes the server analyse with the same word size
 TinyGo compiles for, where omitting it would silently assume the 64-bit
-host."
+host.
+
+CGO_ENABLED is forced on because passing GOARCH is what makes this look
+like a cross-build to Go, which disables cgo by default.  Cgo files are
+then dropped from every package, so a library binding C -- espradio, for
+one, whose Enable, Connect and Scan all live in a cgo file -- reports its
+whole API as undefined while GOROOT and the build tags look correct.  The
+server only parses, so no C cross-compiler is needed for this to help."
   (or (gethash (list tinygo-command target) tinygo--environment-cache)
       (let* ((info (tinygo--info target))
              (goroot (tinygo--info-value "cached GOROOT" info))
@@ -192,6 +199,7 @@ host."
                      (list (concat "GOROOT=" goroot)
                            (and goos (concat "GOOS=" goos))
                            (and goarch (concat "GOARCH=" goarch))
+                           "CGO_ENABLED=1"
                            (concat "GOFLAGS=-tags="
                                    (replace-regexp-in-string " +" "," tags))))))
           (puthash (list tinygo-command target) environment tinygo--environment-cache)
