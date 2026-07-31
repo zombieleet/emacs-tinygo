@@ -17,6 +17,10 @@ All notable changes to this project are documented here.
   has a global value. The lsp-mode client has priority over the standard Go
   client, so it would take over unrelated Go work. Activation now requires a
   project-scoped target; explicit commands still honour the global default.
+- Treat GOOS and GOARCH as optional. Only GOROOT and the build tags are
+  specified by TinyGo's IDE guidance, so a release that renames or drops those
+  lines now costs word-size accuracy rather than preventing the language server
+  from starting at all.
 - Pass the required context arguments to Eglot server-contact functions.
 - Restart Eglot and lsp-mode with their required server/workspace objects.
 - Validate interactive targets before changing project state.

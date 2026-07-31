@@ -44,6 +44,24 @@
       (should (member "GOFLAGS=-tags=tinygo.wasm,tinygo,purego"
                       (tinygo--environment-for-target "wasm"))))))
 
+(ert-deftest tinygo-environment-survives-missing-goos-and-goarch ()
+  ;; Only GOROOT and the build tags are specified by TinyGo's IDE guidance,
+  ;; so a release that renames or drops the GOOS/GOARCH lines should cost
+  ;; word-size accuracy, not the whole language server.
+  (let ((tinygo--environment-cache (make-hash-table :test #'equal))
+        (tinygo-command "tinygo"))
+    (cl-letf (((symbol-function 'tinygo--info)
+               (lambda (_) "build tags: tinygo baremetal\ncached GOROOT: /tmp/root\n")))
+      (should (equal (tinygo--environment-for-target "pico")
+                     '("GOROOT=/tmp/root" "GOFLAGS=-tags=tinygo,baremetal"))))))
+
+(ert-deftest tinygo-environment-requires-goroot-and-tags ()
+  (let ((tinygo--environment-cache (make-hash-table :test #'equal))
+        (tinygo-command "tinygo"))
+    (cl-letf (((symbol-function 'tinygo--info)
+               (lambda (_) "GOOS: linux\nGOARCH: arm\n")))
+      (should-error (tinygo--environment-for-target "pico") :type 'user-error))))
+
 (ert-deftest tinygo-environment-uses-tinygo-info ()
   (let ((tinygo--environment-cache (make-hash-table :test #'equal))
         (tinygo-command "tinygo"))

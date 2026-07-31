@@ -164,20 +164,36 @@ lost its first character."
     (string-trim (match-string 1 info))))
 
 (defun tinygo--environment-for-target (target)
-  "Return environment variables required for TARGET's Go language server."
+  "Return environment variables required for TARGET's Go language server.
+
+GOROOT and the build tags are required: they are what TinyGo's IDE
+guidance specifies, and without them the `machine' package cannot
+resolve.  GOOS and GOARCH are passed on when `tinygo info' reports them,
+but their absence is not fatal, so a TinyGo release that changes or drops
+those lines degrades instead of refusing to start.
+
+Note that the reported GOARCH is a proxy rather than the literal
+architecture -- TinyGo reports `arm' for AVR and 32-bit RISC-V alike,
+because Go has no such GOARCH and rejects the pair outright.  Passing it
+is still worthwhile: it makes the server analyse with the same word size
+TinyGo compiles for, where omitting it would silently assume the 64-bit
+host."
   (or (gethash (list tinygo-command target) tinygo--environment-cache)
       (let* ((info (tinygo--info target))
              (goroot (tinygo--info-value "cached GOROOT" info))
              (goos (tinygo--info-value "GOOS" info))
              (goarch (tinygo--info-value "GOARCH" info))
              (tags (tinygo--info-value "build tags" info)))
-        (unless (and goroot goos goarch tags)
-          (user-error "Could not read TinyGo environment for target %s" target))
+        (unless (and goroot tags)
+          (user-error "Could not read GOROOT and build tags for TinyGo target %s"
+                      target))
         (let ((environment
-               (list (concat "GOROOT=" goroot)
-                     (concat "GOOS=" goos)
-                     (concat "GOARCH=" goarch)
-                     (concat "GOFLAGS=-tags=" (replace-regexp-in-string " +" "," tags)))))
+               (delq nil
+                     (list (concat "GOROOT=" goroot)
+                           (and goos (concat "GOOS=" goos))
+                           (and goarch (concat "GOARCH=" goarch))
+                           (concat "GOFLAGS=-tags="
+                                   (replace-regexp-in-string " +" "," tags))))))
           (puthash (list tinygo-command target) environment tinygo--environment-cache)
           environment))))
 
